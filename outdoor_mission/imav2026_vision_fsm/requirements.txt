@@ -1,1 +1,1 @@
-opencv-contrib-python>=4.8.0
+# The core FSM and waypoint planner use only the Python 3.10+ standard library.
