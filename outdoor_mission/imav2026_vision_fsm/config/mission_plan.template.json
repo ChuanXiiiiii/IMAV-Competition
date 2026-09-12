@@ -1,19 +1,16 @@
 {
+  "enabled_missions": [1, 4],
   "takeoff_altitude_m": 30.0,
-  "water_goal_l": 2.0,
+  "include_mapping_area2": true,
   "first_aid_drop_altitude_m": 1.5,
   "first_aid_horizontal_goal_m": 0.5,
   "deadman_approach_altitude_m": 10.0,
-  "include_mapping_area2": true,
   "low_battery_return_percent": 25.0,
   "slot_duration_s": 1800.0,
   "return_time_margin_s": 180.0,
   "routes": {
-    "m3_water_source": [],
-    "m3_water_target": [],
     "m1_area1": [],
     "m1_area2": [],
-    "m2_fire_search": [],
     "m4_deadman_search": [],
     "home": []
   }
