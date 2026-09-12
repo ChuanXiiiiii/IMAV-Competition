@@ -1,21 +1,16 @@
-"""Deliberately simple, deterministic waypoint planning for IMAV 2026.
-
-The competition-specific coordinates are supplied on the competition day.  This
-module does not optimise online: it validates a pre-agreed route table and sends
-waypoints in order.  A small lawnmower helper is provided for rectangular search
-and mapping areas.
-"""
+"""Simple, deterministic waypoint plans for IMAV 2026 Outdoor Missions 1 and 4."""
 
 from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, Mapping, Tuple
+from typing import Dict, Mapping, Sequence, Tuple
 
 
 EARTH_RADIUS_M = 6_371_000.0
+SUPPORTED_MISSIONS = (1, 4)
 
 
 @dataclass(frozen=True)
@@ -34,57 +29,53 @@ class Waypoint:
 
 @dataclass(frozen=True)
 class MissionPlan:
-    """Routes consumed by the macro FSM.
-
-    Required route IDs:
-      m3_water_source, m3_water_target, m1_area1, m2_fire_search,
-      m4_deadman_search, home.
-    m1_area2 is required only when include_mapping_area2 is true.
-    """
+    """Configuration shared by test profiles and the combined competition FSM."""
 
     routes: Mapping[str, Tuple[Waypoint, ...]]
+    enabled_missions: Tuple[int, ...] = (1, 4)
     takeoff_altitude_m: float = 30.0
-    water_goal_l: float = 2.0
+    include_mapping_area2: bool = True
     first_aid_drop_altitude_m: float = 1.5
     first_aid_horizontal_goal_m: float = 0.5
     deadman_approach_altitude_m: float = 10.0
-    include_mapping_area2: bool = True
     low_battery_return_percent: float = 25.0
     slot_duration_s: float = 1800.0
     return_time_margin_s: float = 180.0
 
+    def with_missions(self, missions: Sequence[int]) -> "MissionPlan":
+        """Return a plan for M1-only, M4-only, or combined execution."""
+
+        return replace(self, enabled_missions=normalise_missions(missions))
+
     def validate(self) -> None:
-        required = {
-            "m3_water_source",
-            "m3_water_target",
-            "m1_area1",
-            "m2_fire_search",
-            "m4_deadman_search",
-            "home",
-        }
-        if self.include_mapping_area2:
-            required.add("m1_area2")
+        missions = normalise_missions(self.enabled_missions)
+        required = {"home"}
+        if 1 in missions:
+            required.add("m1_area1")
+            if self.include_mapping_area2:
+                required.add("m1_area2")
+        if 4 in missions:
+            required.add("m4_deadman_search")
+
         missing = sorted(route_id for route_id in required if not self.routes.get(route_id))
         if missing:
             raise ValueError(f"Mission plan has missing or empty routes: {', '.join(missing)}")
-        if not 0.0 < self.first_aid_drop_altitude_m <= 2.0:
-            raise ValueError("first_aid_drop_altitude_m must be in (0, 2.0]")
+        if not 0.0 < self.first_aid_drop_altitude_m < 2.0:
+            raise ValueError("first_aid_drop_altitude_m must be strictly between 0 and 2.0 m")
         if not 2.0 < self.deadman_approach_altitude_m <= 80.0:
             raise ValueError("deadman_approach_altitude_m must be in (2.0, 80.0]")
         if not 0.0 < self.first_aid_horizontal_goal_m <= 3.0:
             raise ValueError("first_aid_horizontal_goal_m must be in (0, 3.0]")
-        if self.water_goal_l <= 0.0 or self.water_goal_l > 2.0:
-            raise ValueError("water_goal_l must be in (0, 2.0]")
+        if not 0.0 < self.takeoff_altitude_m <= 80.0:
+            raise ValueError("takeoff_altitude_m must be in (0, 80.0]")
         if self.slot_duration_s <= 0.0:
             raise ValueError("slot_duration_s must be positive")
         if not 0.0 < self.return_time_margin_s < self.slot_duration_s:
             raise ValueError("return_time_margin_s must be between zero and slot_duration_s")
-        if not 0.0 < self.takeoff_altitude_m <= 80.0:
-            raise ValueError("takeoff_altitude_m must be in (0, 80.0]")
         invalid_altitudes = [
             waypoint.name
-            for route in self.routes.values()
-            for waypoint in route
+            for route_id in required
+            for waypoint in self.routes[route_id]
             if not 0.0 <= waypoint.position.altitude_agl_m <= 80.0
         ]
         if invalid_altitudes:
@@ -92,6 +83,16 @@ class MissionPlan:
 
     def route(self, route_id: str) -> Tuple[Waypoint, ...]:
         return tuple(self.routes[route_id])
+
+
+def normalise_missions(missions: Sequence[int]) -> Tuple[int, ...]:
+    result = tuple(dict.fromkeys(int(mission) for mission in missions))
+    if not result:
+        raise ValueError("At least one mission must be enabled")
+    unsupported = sorted(set(result) - set(SUPPORTED_MISSIONS))
+    if unsupported:
+        raise ValueError(f"Only Outdoor Missions 1 and 4 are supported: {unsupported}")
+    return result
 
 
 def _distance_m(a: GeoPoint, b: GeoPoint) -> float:
@@ -120,14 +121,12 @@ def generate_lawnmower_route(
     altitude_agl_m: float,
     prefix: str,
 ) -> Tuple[Waypoint, ...]:
-    """Generate alternating west/east endpoints for an approximately rectangular area.
-
-    The perception/mapping team must choose lane spacing from camera footprint and
-    required overlap.  Linear lat/lon interpolation is adequate at this field scale.
-    """
+    """Generate a predictable alternating route for M1 mapping or M4 search."""
 
     if lane_spacing_m <= 0.0:
         raise ValueError("lane_spacing_m must be positive")
+    if not 0.0 < altitude_agl_m <= 80.0:
+        raise ValueError("altitude_agl_m must be in (0, 80.0]")
     west_length = _distance_m(south_west, north_west)
     east_length = _distance_m(south_east, north_east)
     lane_count = max(2, math.ceil(max(west_length, east_length) / lane_spacing_m) + 1)
@@ -148,9 +147,7 @@ def generate_lawnmower_route(
     return tuple(waypoints)
 
 
-def load_plan_json(path: str | Path) -> MissionPlan:
-    """Load the day-of-competition route table from JSON."""
-
+def load_plan_json(path: str | Path, mission_override: Sequence[int] | None = None) -> MissionPlan:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     routes: Dict[str, Tuple[Waypoint, ...]] = {}
     for route_id, raw_waypoints in data["routes"].items():
@@ -166,48 +163,18 @@ def load_plan_json(path: str | Path) -> MissionPlan:
             )
             for item in raw_waypoints
         )
+    configured = mission_override if mission_override is not None else data.get("enabled_missions", [1, 4])
     plan = MissionPlan(
         routes=routes,
+        enabled_missions=normalise_missions(configured),
         takeoff_altitude_m=float(data.get("takeoff_altitude_m", 30.0)),
-        water_goal_l=float(data.get("water_goal_l", 2.0)),
+        include_mapping_area2=bool(data.get("include_mapping_area2", True)),
         first_aid_drop_altitude_m=float(data.get("first_aid_drop_altitude_m", 1.5)),
         first_aid_horizontal_goal_m=float(data.get("first_aid_horizontal_goal_m", 0.5)),
         deadman_approach_altitude_m=float(data.get("deadman_approach_altitude_m", 10.0)),
-        include_mapping_area2=bool(data.get("include_mapping_area2", True)),
         low_battery_return_percent=float(data.get("low_battery_return_percent", 25.0)),
         slot_duration_s=float(data.get("slot_duration_s", 1800.0)),
         return_time_margin_s=float(data.get("return_time_margin_s", 180.0)),
     )
     plan.validate()
     return plan
-
-
-def write_plan_json(plan: MissionPlan, path: str | Path) -> None:
-    """Write a validated plan in a format that can be reviewed before flight."""
-
-    plan.validate()
-    payload = {
-        "takeoff_altitude_m": plan.takeoff_altitude_m,
-        "water_goal_l": plan.water_goal_l,
-        "first_aid_drop_altitude_m": plan.first_aid_drop_altitude_m,
-        "first_aid_horizontal_goal_m": plan.first_aid_horizontal_goal_m,
-        "deadman_approach_altitude_m": plan.deadman_approach_altitude_m,
-        "include_mapping_area2": plan.include_mapping_area2,
-        "low_battery_return_percent": plan.low_battery_return_percent,
-        "slot_duration_s": plan.slot_duration_s,
-        "return_time_margin_s": plan.return_time_margin_s,
-        "routes": {
-            route_id: [
-                {
-                    "name": waypoint.name,
-                    "latitude_deg": waypoint.position.latitude_deg,
-                    "longitude_deg": waypoint.position.longitude_deg,
-                    "altitude_agl_m": waypoint.position.altitude_agl_m,
-                    "acceptance_radius_m": waypoint.acceptance_radius_m,
-                }
-                for waypoint in waypoints
-            ]
-            for route_id, waypoints in plan.routes.items()
-        },
-    }
-    Path(path).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
