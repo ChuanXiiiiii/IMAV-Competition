@@ -1,34 +1,42 @@
-# IMAV 2026 Outdoor Mission Orchestrator
+# IMAV 2026 Outdoor M1/M4 Pluggable FSM
 
-This package implements a typed macro FSM for completing all four outdoor missions in one flight:
+This package follows `Rulebook_IMAV2026_V4-1.pdf` and supports three profiles with one codebase:
 
-1. collect and drop water;
-2. map the field and record located vehicle identities;
-3. locate two thermal hot spots;
-4. localise the dead-man mannequin and drop the first-aid kit;
-5. return, precision-land on ArUco ID 0, and export scoring data.
+- Mission 1 test: mapping and vehicle identification only;
+- Mission 4 test: mannequin search and first-aid drop only;
+- Combined competition run: Mission 1, then Mission 4, then one safe return/landing.
 
-The implementation is deliberately decoupled from OpenCV, detectors, sound localisation, payload
-drivers and low-level flight control. See `TEAM_INTERFACE.md` for every state and input/output port.
+Mission 2 and Mission 3 are not part of the current team objective.
 
-## Files
+## Structure
 
-- `imav2026_outdoor_fsm.py` - typed input/output ports and macro state machine.
-- `simple_waypoint_planner.py` - validated route table and deterministic lawnmower helper.
-- `config/mission_plan.template.json` - copy and fill with coordinates supplied on competition day.
-- `TEAM_INTERFACE.md` - integration contract for all module teams.
-- `tests/test_fsm.py` - full four-mission flow and guard/safety tests.
+- `imav2026_outdoor_fsm.py` - mission plugins, typed ports and macro orchestrator.
+- `simple_waypoint_planner.py` - profile-aware plan validation and lawnmower routes.
+- `config/mission_plan.template.json` - day-of-competition route template.
+- `TEAM_INTERFACE.md` - state and module integration contract.
+- `tests/test_fsm.py` - M1-only, M4-only, combined and safety tests.
 
-## Validate a day-of-competition plan
+## Select a profile
+
+The JSON defaults to `[1, 4]`. The CLI can override it without changing code:
 
 ```bash
-python imav2026_outdoor_fsm.py \
-  --plan config/mission_plan.day_of.json \
-  --validate-plan
+# Mission 1 test
+python imav2026_outdoor_fsm.py --plan config/mission_plan.day_of.json --missions 1 --validate-plan
+
+# Mission 4 test
+python imav2026_outdoor_fsm.py --plan config/mission_plan.day_of.json --missions 4 --validate-plan
+
+# Combined final FSM
+python imav2026_outdoor_fsm.py --plan config/mission_plan.day_of.json --missions 1 4 --validate-plan
 ```
 
-The committed template intentionally contains empty routes and therefore fails validation until the
-day-specific coordinates are filled. This prevents placeholder coordinates from reaching an aircraft.
+Plan validation is profile-aware: M1-only does not require the M4 search route, and M4-only does not
+require either mapping route. Every profile requires `home`.
+
+The committed template deliberately has empty routes because exact zone and landing coordinates are
+provided on the competition day. Copy it to `mission_plan.day_of.json`, fill only real coordinates,
+plot/check the route against the geofence, and validate it before connecting an aircraft.
 
 ## Test
 
